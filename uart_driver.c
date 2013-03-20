@@ -103,7 +103,7 @@ unsigned char uartSendPacket(MacPacket packet) {
         tx_payload = packet->payload;
         tx_checksum = packet->payload_length + 3; // add three for size, size check, and checksum
         tx_idx = UART_TX_SEND_SIZE;
-        U2TXREG = tx_checksum;
+        WriteUART2(tx_checksum);
         CRITICAL_SECTION_END
         LED_3 = 0;
         return 1;
@@ -118,6 +118,7 @@ void __attribute__((interrupt, no_auto_psv)) _U2TXInterrupt(void) {
     unsigned char tx_byte;
 
     CRITICAL_SECTION_START
+    _U2TXIF = 0;
     LED_3 = 1;
     if(tx_idx != UART_TX_IDLE) {
         if(tx_idx == UART_TX_SEND_SIZE) {
@@ -134,7 +135,6 @@ void __attribute__((interrupt, no_auto_psv)) _U2TXInterrupt(void) {
         tx_checksum += tx_byte;
         WriteUART2(tx_byte);
     }
-    _U2TXIF = 0;
     LED_3 = 0;
     CRITICAL_SECTION_END
 }
