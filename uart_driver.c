@@ -1,9 +1,13 @@
 #include "uart_driver.h"
 #include "uart.h"
+#include "carray.h"
 #include "mac_packet.h"
 #include "payload.h"
 #include "ppool.h"
 #include "utils.h"
+
+// In/out packet FIFO queues
+static CircArray tx_queue, rx_queue;
 
 static MacPacket tx_packet = NULL;
 static Payload tx_payload = NULL;
@@ -17,7 +21,9 @@ static unsigned char rx_checksum;
 
 static packet_callback rx_callback = NULL;
 
-void uartInit(packet_callback rx_cb) {
+static unsigned char uartSendPacket(MacPacket packet);
+
+void uartInit(unsigned int tx_queue_length, unsigned int rx_queue_length, packet_callback rx_cb) {
     /// UART2 for RS-232 w/PC @ 230400, 8bit, No parity, 1 stop bit
     unsigned int U2MODEvalue, U2STAvalue, U2BRGvalue;
     U2MODEvalue = UART_EN & UART_IDLE_CON & UART_IrDA_DISABLE &
@@ -39,57 +45,67 @@ void uartInit(packet_callback rx_cb) {
     rx_idx = UART_RX_IDLE;
     rx_callback = rx_cb;
 
+    tx_queue = carrayCreate(tx_queue_length);
+    rx_queue = carrayCreate(rx_queue_length);
+
     ConfigIntUART2(UART_TX_INT_EN & UART_TX_INT_PR4 & UART_RX_INT_EN & UART_RX_INT_PR4);
     EnableIntU2TX;
     EnableIntU2RX;
 }
 
-//General blocking UART send function, appends basic checksum
-unsigned char uartSend(unsigned char length, unsigned char *frame) {
-    int i;
-    unsigned char checksum = 0;
 
-    while(BusyUART2());
-    WriteUART2(length);
-    while(BusyUART2());
-    WriteUART2(~length);
-
-    checksum = 0xFF;
-
-    //send payload data
-    for (i = 0; i < length; i++) {
-        checksum += frame[i];
-        while(BusyUART2());
-        WriteUART2(frame[i]);
-    }
-
-    //Send Checksum Data
-    while(BusyUART2());
-    WriteUART2(checksum);
-    return 1;
+MacPacket uartDequeueRxPacket(void)
+{
+    return (MacPacket)carrayPopTail(rx_queue);
 }
 
-unsigned char uartSendPayload(unsigned char type, unsigned char status, unsigned char length, unsigned char *frame) {
-    MacPacket packet;
-    Payload pld;
+unsigned int uartEnqueueTxPacket(MacPacket packet) {
+    return carrayAddTail(tx_queue, packet);
+}
 
-    packet = ppoolRequestFullPacket(length);
-    if(packet == NULL)
-        return 0;
+unsigned int uartTxQueueEmpty(void) {
+    return carrayIsEmpty(tx_queue);
+}
 
-    pld = packet->payload;
-    paySetType(pld, type);
-    paySetStatus(pld, status);
-    paySetData(pld, length, frame);
-    if(uartSendPacket(packet)) {
-        return 1;
-    } else {
-        ppoolReturnFullPacket(packet);
-        return 0;
+unsigned int uartTxQueueFull(void) {
+    return carrayIsFull(tx_queue);
+}
+
+unsigned int uartGetTxQueueSize(void) {
+    return carrayGetSize(tx_queue);
+}
+
+unsigned int uartRxQueueEmpty(void){
+    return carrayIsEmpty(rx_queue);
+}
+
+unsigned int uartRxQueueFull(void) {
+    return carrayIsFull(rx_queue);
+}
+
+unsigned int uartGetRxQueueSize(void) {
+    return carrayGetSize(rx_queue);
+}
+
+void uartFlushQueues(void) {
+    while (!carrayIsEmpty(tx_queue)) {
+        ppoolReturnFullPacket((MacPacket)carrayPopTail(tx_queue));
+    }
+    while (!carrayIsEmpty(rx_queue)) {
+        ppoolReturnFullPacket((MacPacket)carrayPopTail(rx_queue));
     }
 }
 
-unsigned char uartSendPacket(MacPacket packet) {
+
+void uartProcess(void) {
+  // Process pending outgoing packets
+  if(!uartTxQueueEmpty()) {
+    uartSendPacket(carrayPopHead(tx_queue)); // Process outgoing buffer
+    return;
+  }
+}
+
+static unsigned char uartSendPacket(MacPacket packet) {
     CRITICAL_SECTION_START
     LED_3 = 1;
     if(tx_packet != NULL) {
@@ -163,7 +179,14 @@ void __attribute__((__interrupt__, no_auto_psv)) _U2RXInterrupt(void) {
             }
         } else if (rx_idx == rx_payload->data_length + PAYLOAD_HEADER_LENGTH) {
             if(rx_checksum == rx_byte && rx_callback != NULL) {
+                // Call callback
                 (rx_callback)(rx_packet);
+
+                // Add to queue
+                if(uartRxQueueFull()) { return; } // Don't bother if rx queue full
+                if(!carrayAddTail(rx_queue, rx_packet)) {
+                  ppoolReturnFullPacket(rx_packet); // Check for failure
+                }
             } else {
                 ppoolReturnFullPacket(rx_packet);
             }

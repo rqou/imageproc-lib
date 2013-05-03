@@ -53,10 +53,23 @@
 
 typedef void (*packet_callback)(MacPacket);
 
-void uartInit(packet_callback rx_cb);
-unsigned char uartSend(unsigned char length,unsigned char *frame);
-unsigned char uartSendPayload(unsigned char type, unsigned char status, unsigned char length, unsigned char *frame);
-unsigned char uartSendPacket(MacPacket packet);
+void uartInit(unsigned int tx_queue_length, unsigned int rx_queue_length, packet_callback rx_cb);
+
+unsigned int uartEnqueueTxPacket(MacPacket packet);
+MacPacket uartDequeueRxPacket(void);
+
+unsigned int uartTxQueueEmpty(void);
+unsigned int uartTxQueueFull(void);
+unsigned int uartGetTxQueueSize(void);
+unsigned int uartRxQueueEmpty(void);
+unsigned int uartRxQueueFull(void);
+unsigned int uartGetRxQueueSize(void);
+// Clear all packets off of queue
+void uartFlushQueues(void);
+
+// Processes queues and internals
+// Should be called regularly
+void uartProcess(void);
 
 #endif	/* UART_H */
 
